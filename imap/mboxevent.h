@@ -214,7 +214,7 @@ void mboxevent_set_access(struct mboxevent *event,
 /*
  * Shortcut to setting event notification parameters
  */
-void mboxevent_extract_acl(struct mboxevent *event, const char *identifier,
+void mboxevent_set_acl(struct mboxevent *event, const char *identifier,
 			   const char *rights);
 
 /*
