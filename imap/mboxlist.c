@@ -1642,7 +1642,7 @@ EXPORTED int mboxlist_setacl(struct namespace *namespace, const char *name,
 	/* send a AclChange event notification */
 	struct mboxevent *mboxevent = mboxevent_new(EVENT_ACL_CHANGE);
 	mboxevent_extract_mailbox(mboxevent, mailbox);
-	mboxevent_set_acl(mboxevent, identifier, newacl);
+	mboxevent_set_acl(mboxevent, identifier, rights);
 
 	mboxevent_notify(mboxevent);
 	mboxevent_free(&mboxevent);

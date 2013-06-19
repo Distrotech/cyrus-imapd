@@ -633,8 +633,8 @@ EXPORTED void mboxevent_set_acl(struct mboxevent *event, const char *identifier,
     if (!event)
 	return;
 
-    FILL_STRING_PARAM(event, EVENT_ACL_SUBJECT, identifier);
-    FILL_STRING_PARAM(event, EVENT_ACL_RIGHTS, rights);
+    FILL_STRING_PARAM(event, EVENT_ACL_SUBJECT, xstrdup(identifier));
+    FILL_STRING_PARAM(event, EVENT_ACL_RIGHTS, xstrdup(rights));
 }
 
 EXPORTED void mboxevent_extract_record(struct mboxevent *event, struct mailbox *mailbox,
