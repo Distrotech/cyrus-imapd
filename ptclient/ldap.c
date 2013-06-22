@@ -1334,6 +1334,9 @@ static int ptsmodule_make_authstate_group(
     struct auth_state **newstate)
 {
     char *base = NULL, *filter = NULL;
+    char *domain = NULL;
+    char domain_filter[1024];
+    char *domain_attrs[] = {(char *)ptsm->domain_name_attribute,(char *)ptsm->domain_result_attribute,NULL};
     int rc;
     int i; int n;
     LDAPMessage *res = NULL;
@@ -1357,6 +1360,77 @@ static int ptsmodule_make_authstate_group(
         *reply = "ptsmodule_expand_tokens() failed for group filter";
         goto done;
     }
+
+    if (ptsm->domain_base_dn && (strrchr(canon_id, '@') != NULL)) {
+	syslog(LOG_DEBUG, "(groups) Attempting to get domain for %s from %s", canon_id, ptsm->domain_base_dn);
+
+	/* Get the base dn to search from domain_base_dn searched on domain_scope with
+	    domain_filter */
+	domain = strrchr(canon_id, '@');
+
+	syslog(LOG_DEBUG, "(groups) Input domain would be %s", domain);
+
+	/* Strip the first character which is a '@' */
+	memmove(domain, domain+1, strlen(domain));
+
+	syslog(LOG_DEBUG, "(groups) Input domain would be %s", domain);
+
+	snprintf(domain_filter, sizeof(domain_filter), ptsm->domain_filter, domain);
+
+	syslog(LOG_DEBUG, "(groups) Domain filter: %s", domain_filter);
+
+	rc = ldap_search_st(ptsm->ld, ptsm->domain_base_dn, ptsm->domain_scope, domain_filter, domain_attrs, 0, &(ptsm->timeout), &res);
+
+	if (rc != LDAP_SUCCESS) {
+	    syslog(LOG_DEBUG, "(groups) Result from domain query not OK");
+	    return rc;
+	} else {
+	    syslog(LOG_DEBUG, "(groups) Result from domain query OK");
+	}
+
+	if (ldap_count_entries(ptsm->ld, res) < 1) {
+	    syslog(LOG_ERR, "(groups) No domain %s found", domain);
+	    return PTSM_FAIL;
+	} else if (ldap_count_entries(ptsm->ld, res) > 1) {
+	    syslog(LOG_ERR, "(groups) Multiple domains %s found", domain);
+	    return PTSM_FAIL;
+	} else {
+	    syslog(LOG_DEBUG, "(groups) Domain %s found", domain);
+	    if ((entry = ldap_first_entry(ptsm->ld, res)) != NULL) {
+		if ((vals = ldap_get_values(ptsm->ld, entry, ptsm->domain_result_attribute)) != NULL) {
+		    ptsm->group_base = vals[0];
+		    rc = PTSM_OK;
+		} else if ((vals = ldap_get_values(ptsm->ld, entry, ptsm->domain_name_attribute)) != NULL) {
+		    char *new_domain = xstrdup(vals[0]);
+		    syslog(LOG_DEBUG, "(groups) Domain %s is now domain %s", domain, new_domain);
+		    rc = ptsmodule_standard_root_dn(new_domain, &ptsm->group_base);
+		    free(new_domain);
+		} else {
+		    rc = ptsmodule_standard_root_dn(domain, &ptsm->group_base);
+		}
+
+		if (rc != PTSM_OK) {
+		    return rc;
+		} else {
+		    base = xstrdup(ptsm->group_base);
+		    syslog(LOG_DEBUG, "Continuing with ptsm->group_base: %s", ptsm->group_base);
+		}
+	    }
+	}
+/*
+	if (domain)
+	    free(domain);
+	if (domain_filter)
+	    free(domain_filter);
+*/
+    } else {
+	rc = ptsmodule_expand_tokens(ptsm->group_base, canon_id, NULL, &base);
+	if (rc != PTSM_OK)
+	    return rc;
+    }
+
+    syslog(LOG_DEBUG, "(groups) about to search %s for %s", base, filter);
+
 
     rc = ptsmodule_expand_tokens(ptsm->group_base, canon_id+6, NULL, &base);
     if (rc != PTSM_OK) {
