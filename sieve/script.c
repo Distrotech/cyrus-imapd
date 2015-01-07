@@ -119,13 +119,17 @@ int script_require(sieve_script_t *s, char *req)
 	    return 0;
 	}
     } else if (!strcmp("imapflags", req)) {
-	if (s->interp.markflags->flag &&
+	if (s->interp.markflags->count &&
 	    (config_sieve_extensions & IMAP_ENUM_SIEVE_EXTENSIONS_IMAPFLAGS)) {
 	    s->support.imapflags = 1;
 	    return 1;
 	} else {
 	    return 0;
 	}
+    } else if (!strcmp("imap4flags", req) &&
+	    (config_sieve_extensions & IMAP_ENUM_SIEVE_EXTENSIONS_IMAP4FLAGS)) {
+	s->support.imap4flags = 1;
+	return 1;
     } else if (!strcmp("notify",req)) {
 	if (s->interp.notify &&
 	    (config_sieve_extensions & IMAP_ENUM_SIEVE_EXTENSIONS_NOTIFY)) {
@@ -206,15 +210,6 @@ int sieve_script_parse(sieve_interp_t *interp, FILE *script,
     return res;
 }
 
-static void free_imapflags(sieve_imapflags_t *imapflags)
-{
-    while (imapflags->nflags)
-	free(imapflags->flag[--imapflags->nflags]);
-    free(imapflags->flag);
-    
-    imapflags->flag = NULL;
-}
-  
 int sieve_script_free(sieve_script_t **s)
 {
     if (*s) {
@@ -350,57 +345,6 @@ static int build_notify_message(sieve_interp_t *i,
 	}
     }
 
-    return SIEVE_OK;
-}
-
-static int sieve_addflag(sieve_imapflags_t *imapflags, const char *flag)
-{
-    int n;
-    /* search for flag already in list */
-    for (n = 0; n < imapflags->nflags; n++) {
-	if (!strcmp(imapflags->flag[n], flag))
-	    break;
-    }
- 
-    /* add flag to list, iff not in list */
-    if (n == imapflags->nflags) {
-	imapflags->nflags++;
-	imapflags->flag =
-	    (char **) xrealloc((char *)imapflags->flag,
-			       imapflags->nflags*sizeof(char *));
-	imapflags->flag[imapflags->nflags-1] = xstrdup(flag);
-    }
- 
-    return SIEVE_OK;
-}
-
-static int sieve_removeflag(sieve_imapflags_t *imapflags, const char *flag)
-{
-    int n;
-    /* search for flag already in list */
-    for (n = 0; n < imapflags->nflags; n++) {
-      if (!strcmp(imapflags->flag[n], flag))
-	break;
-    }
-    
-     /* remove flag from list, iff in list */
-    if (n < imapflags->nflags) 
-      {
-	free(imapflags->flag[n]);
-	imapflags->nflags--;
-	
-	for (; n < imapflags->nflags; n++)
-	  imapflags->flag[n] = imapflags->flag[n+1];
-	
-	if (imapflags->nflags)
-	  {imapflags->flag =
-	     (char **) xrealloc((char *)imapflags->flag,
-				imapflags->nflags*sizeof(char *));}
-	else
-	  {free(imapflags->flag);
-	  imapflags->flag=NULL;}
-      }
-    
     return SIEVE_OK;
 }
 
@@ -591,7 +535,7 @@ static int do_sieve_error(int ret,
 			  sieve_interp_t *interp,
 			  void *script_context,
 			  void *message_context,
-			  sieve_imapflags_t * imapflags,
+			  strarray_t *imapflags,
 			  action_list_t *actions,
 			  notify_list_t *notify_list,
 			  /* notify_action_t *notify_action,*/
@@ -694,7 +638,7 @@ static int do_sieve_error(int ret,
 static int do_action_list(sieve_interp_t *interp,
 			  void *script_context,
 			  void *message_context,
-			  sieve_imapflags_t *imapflags,
+			  strarray_t *imapflags,
 			  action_list_t *actions,
 			  notify_list_t *notify_list,
 			  /* notify_action_t *notify_action,*/
@@ -820,34 +764,33 @@ static int do_action_list(sieve_interp_t *interp,
 
  
 	case ACTION_SETFLAG:
-	    free_imapflags(imapflags);
-	    ret = sieve_addflag(imapflags, a->u.fla.flag);
+	    strarray_fini(imapflags);
 	    break;
 	case ACTION_ADDFLAG:
-	    ret = sieve_addflag(imapflags, a->u.fla.flag);
+	    strarray_add_case(imapflags, a->u.fla.flag);
 	    break;
 	case ACTION_REMOVEFLAG:
-	    ret = sieve_removeflag(imapflags, a->u.fla.flag);
+	    strarray_remove_all_case(imapflags, a->u.fla.flag);
 	    break;
 	case ACTION_MARK:
 	    {
-		int n = interp->markflags->nflags;
+		int n = interp->markflags->count;
 
 		ret = SIEVE_OK;
-		while (n && ret == SIEVE_OK) {
-		    ret = sieve_addflag(imapflags,
-					interp->markflags->flag[--n]);
+		while (n) {
+		    strarray_add_case(imapflags,
+					interp->markflags->data[--n]);
 		}
 		break;
 	    }
 	case ACTION_UNMARK:
 	  {
 	   
-		int n = interp->markflags->nflags;
+		int n = interp->markflags->count;
 		ret = SIEVE_OK;
-		while (n && ret == SIEVE_OK) {
-		    ret = sieve_removeflag(imapflags,
-					   interp->markflags->flag[--n]);
+		while (n) {
+		    strarray_remove_all_case(imapflags,
+					   interp->markflags->data[--n]);
 		}
 		break;
 	    }
@@ -877,8 +820,9 @@ static int do_action_list(sieve_interp_t *interp,
 /* execute some bytecode */
 int sieve_eval_bc(sieve_execute_t *exe, int is_incl, sieve_interp_t *i,
 		  void *sc, void *m,
-		  sieve_imapflags_t * imapflags, action_list_t *actions,
-		  notify_list_t *notify_list, const char **errmsg);
+		  variable_list_t * flagvars, action_list_t *actions,
+		  notify_list_t *notify_list, const char **errmsg,
+		  variable_list_t *workingvars);
 
 int sieve_execute_bytecode(sieve_execute_t *exe, sieve_interp_t *interp,
 			   void *script_context, void *message_context) 
@@ -890,13 +834,16 @@ int sieve_execute_bytecode(sieve_execute_t *exe, sieve_interp_t *interp,
     int ret;
     char actions_string[ACTIONS_STRING_LEN] = "";
     const char *errmsg = NULL;
-    sieve_imapflags_t imapflags;
+    strarray_t imapflags = STRARRAY_INITIALIZER;
+    strarray_t workingflags = STRARRAY_INITIALIZER;
+    variable_list_t flagvars = VARIABLE_LIST_INITIALIZER;
+    variable_list_t workingvars = VARIABLE_LIST_INITIALIZER;
     
+    flagvars.var = &imapflags;
+    workingvars.var = &workingflags;
+
     if (!interp) return SIEVE_FAIL;
 
-    imapflags.flag = NULL; 
-    imapflags.nflags = 0;
-    
     if (interp->notify) {
 	notify_list = new_notify_list();
 	if (notify_list == NULL) {
@@ -917,7 +864,8 @@ int sieve_execute_bytecode(sieve_execute_t *exe, sieve_interp_t *interp,
     else {
 	ret = sieve_eval_bc(exe, 0, interp,
 			    script_context, message_context,
-			    &imapflags, actions, notify_list, &errmsg);
+			    &flagvars, actions, notify_list, &errmsg,
+			    &workingvars);
 
 	if (ret < 0) {
 	    ret = do_sieve_error(SIEVE_RUN_ERROR, interp,
@@ -932,6 +880,9 @@ int sieve_execute_bytecode(sieve_execute_t *exe, sieve_interp_t *interp,
 				 actions_string, errmsg);
 	}
     }
+
+    varlist_fini(&flagvars);
+    varlist_fini(&workingvars);
 
     return ret;
 }

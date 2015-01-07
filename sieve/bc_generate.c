@@ -100,31 +100,34 @@ static int atleast(bytecode_info_t *arr, size_t len)
 /* given a location and a string list, compile it into almost-flat form.
  * <list len> <string len><string ptr><string len><string ptr> etc... */
 static int bc_stringlist_generate(int codep, bytecode_info_t *retval,
-				  stringlist_t *sl) 
+				  strarray_t *sa)
 {
     int len_codep = codep;
     int strcount = 0;
-    stringlist_t *cur;
-    
+    int i;
+
     codep++;
 
     /* Bounds check the string list length */
     if(!atleast(retval,codep+1)) 
 	return -1;
 
-    for(cur=sl; cur; cur=cur->next) 
-    {
-	strcount++;
-	assert((cur->s)!=NULL);
-	
-	/* Bounds check for each string before we allocate it */
-	if(!atleast(retval,codep+2)) 
-	    return -1;
+    if (sa) {
+	for (i = 0 ; i < sa->count ; i++) {
+	    char *s = sa->data[i];
 
-	retval->data[codep++].len = strlen(cur->s);
-	retval->data[codep++].str = cur->s;
+	    strcount++;
+	    assert(s!=NULL);
+
+	    /* Bounds check for each string before we allocate it */
+	    if(!atleast(retval,codep+2)) 
+		return -1;
+
+	    retval->data[codep++].len = strlen(s);
+	    retval->data[codep++].str = s;
+	}
     }
-    
+
     retval->data[len_codep].listlen = strcount;
     return codep;
 }
@@ -303,12 +306,14 @@ static int bc_test_generate(int codep, bytecode_info_t *retval, test_t *t)
 	if (codep == -1) return -1;
 	break;
     case HEADER:
-	/* BC_HEADER { c: comparator } { headers : string list }
-	   { patterns : string list } 
+    case HASFLAG:
+	/* (BC_HEADER | BC_HASFLAG) { c: comparator }
+	   { haystacks : string list } { patterns : string list }
 	*/
       
 	if(!atleast(retval,codep + 1)) return -1;
-	retval->data[codep++].op = BC_HEADER;
+	retval->data[codep++].op = (t->type == HEADER)
+	    ? BC_HEADER : BC_HASFLAG;
       
 	/* comparator */
 	codep = bc_comparator_generate(codep, retval,
@@ -317,7 +322,7 @@ static int bc_test_generate(int codep, bytecode_info_t *retval, test_t *t)
 				       t->u.h.comparator);
 	if (codep == -1) return -1;
       
-	/* headers */
+	/* haystacks */
 	codep = bc_stringlist_generate(codep, retval, t->u.h.sl);
 	if (codep == -1) return -1;
       
@@ -455,9 +460,16 @@ static int bc_action_generate(int codep, bytecode_info_t *retval,
 		retval->data[codep++].op = B_DISCARD;
 		break;
 	    case KEEP:
-		/* KEEP (no arguments) */
-		if(!atleast(retval,codep+1)) return -1;
+		/* KEEP
+		   STRINGLIST flags
+		   VALUE copy
+		*/
+		if (!atleast(retval, codep+1)) return -1;
 		retval->data[codep++].op = B_KEEP;
+		codep = bc_stringlist_generate(codep,retval,c->u.k.flags);
+		if (codep == -1) return -1;
+		if(!atleast(retval,codep+1)) return -1;
+		retval->data[codep++].value = c->u.k.copy;
 		break;
 	    case MARK:
 		/* MARK (no arguments) */
@@ -538,11 +550,15 @@ static int bc_action_generate(int codep, bytecode_info_t *retval,
 		break;
 	    case FILEINTO:
 		/* FILEINTO
+		   STRINGLIST flags
 		   VALUE copy
 		   STRING folder
 		*/
-		if(!atleast(retval,codep+4)) return -1;
+		if (!atleast(retval, codep+1)) return -1;
 		retval->data[codep++].op = B_FILEINTO;
+		codep = bc_stringlist_generate(codep, retval, c->u.f.flags);
+		if(codep == -1) return -1;
+		if (!atleast(retval, codep+3)) return -1;
 		retval->data[codep++].value = c->u.f.copy;
 		retval->data[codep++].len = strlen(c->u.f.folder);
 		retval->data[codep++].str = c->u.f.folder;

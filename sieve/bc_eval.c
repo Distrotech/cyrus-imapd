@@ -370,7 +370,8 @@ static int shouldRespond(void * m, sieve_interp_t *interp,
 
 /* Evaluate a bytecode test */
 static int eval_bc_test(sieve_interp_t *interp, void* m,
-			bytecode_input_t * bc, int * ip)
+			bytecode_input_t * bc, int * ip,
+			strarray_t *workingflags)
 {
     int res=0; 
     int i=*ip;
@@ -392,7 +393,7 @@ static int eval_bc_test(sieve_interp_t *interp, void* m,
 
     case BC_NOT:/*2*/
 	i+=1;
-	res = eval_bc_test(interp, m, bc, &i);
+	res = eval_bc_test(interp, m, bc, &i, workingflags);
 	if(res >= 0) res = !res; /* Only invert in non-error case */
 	break;
 
@@ -451,7 +452,7 @@ static int eval_bc_test(sieve_interp_t *interp, void* m,
 	 * in the right place */
 	for (x=0; x<list_len && !res; x++) { 
 	    int tmp;
-	    tmp = eval_bc_test(interp, m, bc, &i);
+	    tmp = eval_bc_test(interp, m, bc, &i, workingflags);
 	    if(tmp < 0) {
 		res = tmp;
 		break;
@@ -471,7 +472,7 @@ static int eval_bc_test(sieve_interp_t *interp, void* m,
 	/* return 1 unless you find one that isn't true, then return 0 */
 	for (x=0; x<list_len && res; x++) {
 	    int tmp;
-	    tmp = eval_bc_test(interp, m, bc, &i);
+	    tmp = eval_bc_test(interp, m, bc, &i, workingflags);
 	    if(tmp < 0) {
 		res = tmp;
 		break;
@@ -779,6 +780,112 @@ static int eval_bc_test(sieve_interp_t *interp, void* m,
 	
 	break;
     }
+    case BC_HASFLAG:/*15*/
+    {
+	const char** val;
+
+	int haystacksi=i+4;/*the i value for the beginning of the variables*/
+	int needlesi=(ntohl(bc[haystacksi+1].value)/4);
+
+	int numneedles=ntohl(bc[needlesi].len); // number of search flags
+
+	int currneedle; /* current needle */
+
+	int match=ntohl(bc[i+1].value);
+	int relation=ntohl(bc[i+2].value);
+	int comparator=ntohl(bc[i+3].value);
+	int count=0;
+	int isReg = (match==B_REGEX);
+	int ctag = 0;
+	regex_t *reg;
+	char errbuf[100]; /* Basically unused, regexps tested at compile */
+
+	/* set up variables needed for compiling regex */
+	if (isReg)
+	{
+	    if (comparator== B_ASCIICASEMAP)
+	    {
+		ctag= REG_EXTENDED | REG_NOSUB | REG_ICASE;
+	    }
+	    else
+	    {
+		ctag= REG_EXTENDED | REG_NOSUB;
+	    }
+
+	}
+
+	/*find the correct comparator fcn*/
+	comp=lookup_comp(comparator, match, relation, &comprock);
+
+	if(!comp) {
+	    res = SIEVE_RUN_ERROR;
+	    break;
+	}
+
+	if  (match == B_COUNT )
+	{
+	    count = workingflags->count;
+	    snprintf(scount, SCOUNT_SIZE, "%u", count);
+	    /*search through all the data*/
+	    currneedle=needlesi+2;
+	    for (z=0; z<numneedles && !res; z++)
+	    {
+		const char *this_needle;
+
+		currneedle = unwrap_string(bc, currneedle, &this_needle, NULL);
+#if VERBOSE
+		printf("%d, %s \n", count, data_val);
+#endif
+		res |= comp(scount, strlen(scount), this_needle, comprock);
+	    }
+	} else {
+
+	/* search through the haystack for the needles */
+	currneedle=needlesi+2;
+	for(x=0; x<numneedles && !res; x++)
+	{
+	    const char *this_needle;
+
+	    currneedle = unwrap_string(bc, currneedle, &this_needle, NULL);
+
+#if VERBOSE
+	    printf ("val %s %s %s\n", val[0], val[1], val[2]);
+#endif
+
+	    /* search through all the flags */
+
+	    for (y=0; y < workingflags->count && !res; y++)
+	    {
+		const char *active_flag;
+
+		active_flag = workingflags->data[y];
+
+		if (isReg) {
+		    reg= bc_compile_regex(this_needle, ctag, errbuf,
+					  sizeof(errbuf));
+		    if (!reg)
+		    {
+			/* Oops */
+			res=-1;
+			goto alldone;
+		    }
+
+		    res |= comp(active_flag, strlen(active_flag),
+				(const char *)reg, comprock);
+		    free(reg);
+		} else {
+		    res |= comp(active_flag, strlen(active_flag),
+				this_needle, comprock);
+		}
+	    }
+	}
+	}
+
+	/* Update IP */
+	i=(ntohl(bc[needlesi+1].value)/4);
+
+	break;
+    }
     case BC_BODY:/*10*/
     {
 	sieve_bodypart_t ** val;
@@ -920,8 +1027,9 @@ static int eval_bc_test(sieve_interp_t *interp, void* m,
 /* The entrypoint for bytecode evaluation */
 int sieve_eval_bc(sieve_execute_t *exe, int is_incl, sieve_interp_t *i,
 		  void *sc, void *m,
-		  sieve_imapflags_t * imapflags, action_list_t *actions,
-		  notify_list_t *notify_list, const char **errmsg) 
+		  variable_list_t *flagvars, action_list_t *actions,
+		  notify_list_t *notify_list, const char **errmsg,
+		  variable_list_t *workingvars)
 {
     const char *data;
     int res=0;
@@ -981,28 +1089,57 @@ int sieve_eval_bc(sieve_execute_t *exe, int is_incl, sieve_interp_t *i,
 #endif
 
     for(ip++; ip<ip_max; ) { 
+	/* In this loop, when a case is switch'ed to, ip points to the first
+	 * parameter of the action.  This makes it easier to add future
+	 * extensions.  Extensions that change an existing action should add
+	 * any new parameters to the beginning of the particular action's
+	 * bytecode.  This will allow the new code to fall through to the
+	 * older code, which will then parse the older parameters and should
+	 * require only a minimal set of changes to support any new extension.
+	 */
 	int copy = 0;
+	strarray_t *actionflags = NULL;
 
-	op=ntohl(bc[ip].op);
+	op=ntohl(bc[ip++].op);
 	switch(op) {
 	case B_STOP:/*0*/
 	    res=1;
 	    break;
 
-	case B_KEEP:/*1*/
-	    res = do_keep(actions, imapflags);
+	case B_KEEP:/*22*/
+	{
+	    int x;
+	    int list_len=ntohl(bc[ip].len);
+
+	    ip+=2; /* skip opcode, list_len, and list data len */
+
+	    if (list_len) {
+		actionflags = (varlist_extend(flagvars))->var;
+	    }
+	    for (x=0; x<list_len; x++) {
+		const char *flag;
+		ip = unwrap_string(bc, ip, &flag, NULL);
+		if (flag[0]) {
+		strarray_add_case(actionflags,flag);
+		}
+	    }
+	}
+	    copy = ntohl(bc[ip++].value);
+	    /* fall through */
+	case B_KEEP_ORIG:/*1*/
+	    res = do_keep(actions, !copy,
+		    actionflags ? actionflags : flagvars->var);
 	    if (res == SIEVE_RUN_ERROR)
 		*errmsg = "Keep can not be used with Reject";
-	    ip++;
+	    actionflags = NULL;
 	    break;
 
 	case B_DISCARD:/*2*/
 	    res=do_discard(actions);
-	    ip++;
 	    break;
 
 	case B_REJECT:/*3*/
-	    ip = unwrap_string(bc, ip+1, &data, NULL);
+	    ip = unwrap_string(bc, ip, &data, NULL);
 	    
 	    res = do_reject(actions, data);
 	
@@ -1011,31 +1148,52 @@ int sieve_eval_bc(sieve_execute_t *exe, int is_incl, sieve_interp_t *i,
 
 	    break;
 
-	case B_FILEINTO:/*19*/
-	    copy = ntohl(bc[ip+1].value);
+	case B_FILEINTO:/*23*/
+	{
+	    int x;
+	    int list_len=ntohl(bc[ip].len);
+
+	    ip+=2; /* skip opcode, list_len, and list data len */
+
+	    if (list_len) {
+		actionflags = (varlist_extend(flagvars))->var;
+	    }
+	    for (x=0; x<list_len; x++) {
+		const char *flag;
+		ip = unwrap_string(bc, ip, &flag, NULL);
+		if (flag[0]) {
+		strarray_add_case(actionflags,flag);
+		}
+	    }
+	}
+	    /* fall through */
+	case B_FILEINTO_COPY:/*19*/
+	    copy = ntohl(bc[ip].value);
 	    ip+=1;
 
 	    /* fall through */
 	case B_FILEINTO_ORIG:/*4*/
 	{
-	    ip = unwrap_string(bc, ip+1, &data, NULL);
+	    ip = unwrap_string(bc, ip, &data, NULL);
 
-	    res = do_fileinto(actions, data, !copy, imapflags);
+	    res = do_fileinto(actions, data, !copy,
+		    actionflags ? actionflags : flagvars->var);
 
 	    if (res == SIEVE_RUN_ERROR)
 		*errmsg = "Fileinto can not be used with Reject";
 
+	    actionflags = NULL;
 	    break;
 	}
 
 	case B_REDIRECT:/*20*/
-	    copy = ntohl(bc[ip+1].value);
+	    copy = ntohl(bc[ip].value);
 	    ip+=1;
 
 	    /* fall through */
 	case B_REDIRECT_ORIG:/*5*/
 	{
-	    ip = unwrap_string(bc, ip+1, &data, NULL);
+	    ip = unwrap_string(bc, ip, &data, NULL);
 
 	    res = do_redirect(actions, data, !copy);
 
@@ -1047,11 +1205,11 @@ int sieve_eval_bc(sieve_execute_t *exe, int is_incl, sieve_interp_t *i,
 
 	case B_IF:/*6*/
 	{
-	    int testend=ntohl(bc[ip+1].value);
+	    int testend=ntohl(bc[ip].value);
 	    int result;
 	   
-	    ip+=2;
-	    result=eval_bc_test(i, m, bc, &ip);
+	    ip+=1;
+	    result=eval_bc_test(i, m, bc, &ip, workingvars->var);
 	    
 	    if (result<0) {
 		*errmsg = "Invalid test";
@@ -1067,25 +1225,37 @@ int sieve_eval_bc(sieve_execute_t *exe, int is_incl, sieve_interp_t *i,
 
 	case B_MARK:/*8*/
 	    res = do_mark(actions);
-	    ip++;
+	{
+	    int n = i->markflags->count;
+	    while (n) {
+		strarray_add_case(workingvars->var, i->markflags->data[--n]);
+	    }
+	}
 	    break;
 
 	case B_UNMARK:/*9*/
 	    res = do_unmark(actions);
-	    ip++;
+	{
+	    int n = i->markflags->count;
+	    while (n) {
+		strarray_remove_all_case(workingvars->var,
+			i->markflags->data[--n]);
+	    }
+	}
 	    break;
 
 	case B_ADDFLAG:/*10*/ 
 	{
 	    int x;
-	    int list_len=ntohl(bc[ip+1].len);
+	    int list_len=ntohl(bc[ip].len);
 
-	    ip+=3; /* skip opcode, list_len, and list data len */
+	    ip+=2; /* skip opcode, list_len, and list data len */
 
 	    for (x=0; x<list_len; x++) {
 		ip = unwrap_string(bc, ip, &data, NULL);
 		
 		res = do_addflag(actions, data);
+		strarray_add_case(workingvars->var, data);
 
 		if (res == SIEVE_RUN_ERROR)
 		    *errmsg = "addflag can not be used with Reject";
@@ -1096,21 +1266,23 @@ int sieve_eval_bc(sieve_execute_t *exe, int is_incl, sieve_interp_t *i,
 	case B_SETFLAG:
 	{
 	    int x;
-	    int list_len=ntohl(bc[ip+1].len);
+	    int list_len=ntohl(bc[ip].len);
 
-	    ip+=3; /* skip opcode, list_len, and list data len */
+	    ip+=2; /* skip opcode, list_len, and list data len */
 
-	    ip = unwrap_string(bc, ip, &data, NULL);
 
-	    res = do_setflag(actions, data);
+	    res = do_setflag(actions);
+	    strarray_truncate(workingvars->var, 0);
 
 	    if (res == SIEVE_RUN_ERROR) {
 		*errmsg = "setflag can not be used with Reject";
 	    } else {
-		for (x=1; x<list_len; x++) {
+		for (x=0; x<list_len; x++) {
 		    ip = unwrap_string(bc, ip, &data, NULL);
-
+		    if (data[0]) {
 		    res = do_addflag(actions, data);
+		    strarray_add_case(workingvars->var, data);
+		    }
 
 		    if (res == SIEVE_RUN_ERROR)
 			*errmsg = "setflag can not be used with Reject";
@@ -1123,14 +1295,15 @@ int sieve_eval_bc(sieve_execute_t *exe, int is_incl, sieve_interp_t *i,
 	case B_REMOVEFLAG:
 	{
 	    int x;
-	    int list_len=ntohl(bc[ip+1].len);
+	    int list_len=ntohl(bc[ip].len);
 
-	    ip+=3; /* skip opcode, list_len, and list data len */
+	    ip+=2; /* skip opcode, list_len, and list data len */
 
 	    for (x=0; x<list_len; x++) {
 		ip = unwrap_string(bc, ip, &data, NULL);
 
 		res = do_removeflag(actions, data);
+		strarray_remove_all_case(workingvars->var, data);
 
 		if (res == SIEVE_RUN_ERROR)
 		    *errmsg = "removeflag can not be used with Reject";
@@ -1147,8 +1320,6 @@ int sieve_eval_bc(sieve_execute_t *exe, int is_incl, sieve_interp_t *i,
 	    const char * message;
 	    int pri;
 	    
-	    ip++;
-
 	    /* method */
 	    ip = unwrap_string(bc, ip, &method, NULL);
 
@@ -1208,7 +1379,6 @@ int sieve_eval_bc(sieve_execute_t *exe, int is_incl, sieve_interp_t *i,
 	    int comparator;
 	    int pri;
 	    
-	    ip++;
 	    pri=ntohl(bc[ip].value);
 	    ip++;
 	    
@@ -1282,8 +1452,6 @@ int sieve_eval_bc(sieve_execute_t *exe, int is_incl, sieve_interp_t *i,
 	    char buf[128];
 	    char subject[1024];
 	    int x;
-
-	    ip++;
 
 	    x = ntohl(bc[ip].len);
 	    
@@ -1362,19 +1530,18 @@ int sieve_eval_bc(sieve_execute_t *exe, int is_incl, sieve_interp_t *i,
 	    break;
 	}
 	case B_NULL:/*15*/
-	    ip++;
 	    break;
 
 	case B_JUMP:/*16*/
-	    ip= ntohl(bc[ip+1].jump);
+	    ip= ntohl(bc[ip].jump);
 	    break;
 	    
 	case B_INCLUDE:/*17*/
 	{
-	    int isglobal = (ntohl(bc[ip+1].value) == B_GLOBAL);
+	    int isglobal = (ntohl(bc[ip].value) == B_GLOBAL);
 	    char fpath[4096];
 
-	    ip = unwrap_string(bc, ip+2, &data, NULL);
+	    ip = unwrap_string(bc, ip+1, &data, NULL);
 
 	    res = i->getinclude(sc, data, isglobal, fpath, sizeof(fpath));
 	    if (res != SIEVE_OK)
@@ -1388,8 +1555,8 @@ int sieve_eval_bc(sieve_execute_t *exe, int is_incl, sieve_interp_t *i,
 
 	    if (!res)
 		res = sieve_eval_bc(exe, 1, i,
-				    sc, m, imapflags, actions,
-				    notify_list, errmsg);
+				    sc, m, flagvars, actions,
+				    notify_list, errmsg, workingvars);
 
 	    break;
 	}

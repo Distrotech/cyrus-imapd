@@ -57,6 +57,7 @@
 #include "interp.h"
 #include "script.h"
 #include "tree.h"
+#include "flags.h"
 
 #include "../lib/imapurl.h"
 #include "../lib/util.h"
@@ -72,7 +73,7 @@ char errbuf[ERR_BUF_SIZE];
 
 struct vtags {
     int days;
-    stringlist_t *addresses;
+    strarray_t *addresses;
     char *subject;
     char *from;
     char *handle;
@@ -95,7 +96,7 @@ struct aetags {
 struct btags {
     int transform;
     int offset;
-    stringlist_t *content_types;
+    strarray_t *content_types;
     char *comparator;
     int comptag;
     int relation;
@@ -104,7 +105,7 @@ struct btags {
 struct ntags {
     char *method;
     char *id;
-    stringlist_t *options;
+    strarray_t *options;
     int priority;
     char *message;
 };
@@ -118,16 +119,24 @@ struct dtags {
 
 static commandlist_t *ret;
 static sieve_script_t *parse_script;
-static char *check_reqs(stringlist_t *sl);
+static char *check_reqs(strarray_t *sl);
+struct ftags {
+    int copy;
+    strarray_t *flags;
+};
+
 static test_t *build_address(int t, struct aetags *ae,
-			     stringlist_t *sl, stringlist_t *pl);
+			     strarray_t *sl, strarray_t *pl);
 static test_t *build_header(int t, struct htags *h,
-			    stringlist_t *sl, stringlist_t *pl);
-static test_t *build_body(int t, struct btags *b, stringlist_t *pl);
+			    strarray_t *sl, strarray_t *pl);
+static test_t *build_body(int t, struct btags *b, strarray_t *pl);
+static test_t *build_hasflag(int t, struct htags *h,
+			    strarray_t *pl);
 static commandlist_t *build_vacation(int t, struct vtags *h, char *s);
 static commandlist_t *build_notify(int t, struct ntags *n);
 static commandlist_t *build_denotify(int t, struct dtags *n);
-static commandlist_t *build_fileinto(int t, int c, char *f);
+static commandlist_t *build_keep(int t, struct ftags *f);
+static commandlist_t *build_fileinto(int t, struct ftags *f, char *folder);
 static commandlist_t *build_redirect(int t, int c, char *a);
 static struct aetags *new_aetags(void);
 static struct aetags *canon_aetags(struct aetags *ae);
@@ -148,17 +157,20 @@ static struct dtags *new_dtags(void);
 static struct dtags *canon_dtags(struct dtags *d);
 static void free_dtags(struct dtags *d);
 
-static int verify_stringlist(stringlist_t *sl, int (*verify)(char *));
+static int verify_stringlist(strarray_t *sl, int (*verify)(char *));
 static int verify_mailbox(char *s);
 static int verify_address(char *s);
 static int verify_header(char *s);
 static int verify_addrheader(char *s);
 static int verify_envelope(char *s);
-static int verify_flag(char *s);
 static int verify_relat(char *s);
+static struct ftags *new_ftags(void);
+static struct ftags *canon_ftags(struct ftags *f);
+static void free_ftags(struct ftags *f);
+
 #ifdef ENABLE_REGEX
 static int verify_regex(char *s, int cflags);
-static int verify_regexs(stringlist_t *sl, char *comp);
+static int verify_regexs(const strarray_t *sl, char *comp);
 #endif
 static int verify_utf8(char *s);
 
@@ -176,7 +188,7 @@ extern void yyrestart(FILE *f);
 %union {
     int nval;
     char *sval;
-    stringlist_t *sl;
+    strarray_t *sl;
     test_t *test;
     testlist_t *testl;
     commandlist_t *cl;
@@ -186,13 +198,14 @@ extern void yyrestart(FILE *f);
     struct btags *btag;
     struct ntags *ntag;
     struct dtags *dtag;
+    struct ftags *ftag;
 }
 
 %token <nval> NUMBER
 %token <sval> STRING
 %token IF ELSIF ELSE
 %token REJCT FILEINTO REDIRECT KEEP STOP DISCARD VACATION REQUIRE
-%token SETFLAG ADDFLAG REMOVEFLAG MARK UNMARK
+%token SETFLAG ADDFLAG REMOVEFLAG MARK UNMARK HASFLAG FLAGS
 %token NOTIFY DENOTIFY
 %token ANYOF ALLOF EXISTS SFALSE STRUE HEADER NOT SIZE ADDRESS ENVELOPE BODY
 %token COMPARATOR IS CONTAINS MATCHES REGEX COUNT VALUE OVER UNDER
@@ -207,7 +220,7 @@ extern void yyrestart(FILE *f);
 %type <cl> commands command action elsif block
 %type <sl> stringlist strings
 %type <test> test
-%type <nval> comptag relcomp sizetag addrparttag addrorenv location copy
+%type <nval> comptag relcomp sizetag addrparttag addrorenv location copy rtags
 %type <testl> testlist tests
 %type <htag> htags
 %type <aetag> aetags
@@ -216,6 +229,7 @@ extern void yyrestart(FILE *f);
 %type <ntag> ntags
 %type <dtag> dtags
 %type <nval> priority
+%type <ftag> ftags
 
 %%
 
@@ -258,7 +272,7 @@ action: REJCT STRING             { if (!parse_script->support.reject) {
 				   }
 				   $$ = new_command(REJCT);
 				   $$->u.str = $2; }
-	| FILEINTO copy STRING	 { if (!parse_script->support.fileinto) {
+	| FILEINTO ftags STRING	 { if (!parse_script->support.fileinto) {
 				     yyerror("fileinto MUST be enabled with \"require\"");
 	                             YYERROR;
                                    }
@@ -266,11 +280,11 @@ action: REJCT STRING             { if (!parse_script->support.reject) {
 				     YYERROR; /* vm should call yyerror() */
 				   }
 	                           $$ = build_fileinto(FILEINTO, $2, $3); }
-	| REDIRECT copy STRING   { if (!verify_address($3)) {
+	| REDIRECT rtags STRING   { if (!verify_address($3)) {
 				     YYERROR; /* va should call yyerror() */
 				   }
 	                           $$ = build_redirect(REDIRECT, $2, $3); }
-	| KEEP			 { $$ = new_command(KEEP); }
+	| KEEP ftags		 { $$ = build_keep(KEEP,canon_ftags($2)); }
 	| STOP			 { $$ = new_command(STOP); }
 	| DISCARD		 { $$ = new_command(DISCARD); }
 	| VACATION vtags STRING  { if (!parse_script->support.vacation) {
@@ -282,30 +296,36 @@ action: REJCT STRING             { if (!parse_script->support.reject) {
 				   }
   				   $$ = build_vacation(VACATION,
 					    canon_vtags($2), $3); }
-        | SETFLAG stringlist     { if (!parse_script->support.imapflags) {
-                                    yyerror("imapflags MUST be enabled with \"require\"");
+        | SETFLAG stringlist     { if (!(parse_script->support.imapflags ||
+					parse_script->support.imap4flags)) {
+                                    yyerror("imap4flags MUST be enabled with \"require\"");
                                     YYERROR;
                                    }
-                                  if (!verify_stringlist($2, verify_flag)) {
-                                    YYERROR; /* vf should call yyerror() */
+                                  verify_flaglist($2);
+                                  if(!$2->count) {
+                                      strarray_add($2, "");
                                   }
                                   $$ = new_command(SETFLAG);
                                   $$->u.sl = $2; }
-         | ADDFLAG stringlist     { if (!parse_script->support.imapflags) {
-                                    yyerror("imapflags MUST be enabled with \"require\"");
+         | ADDFLAG stringlist     { if (!(parse_script->support.imapflags ||
+					parse_script->support.imap4flags)) {
+                                    yyerror("imap4flags MUST be enabled with \"require\"");
                                     YYERROR;
                                     }
-                                  if (!verify_stringlist($2, verify_flag)) {
-                                    YYERROR; /* vf should call yyerror() */
+                                  verify_flaglist($2);
+                                  if(!$2->count) {
+                                      strarray_add($2, "");
                                   }
                                   $$ = new_command(ADDFLAG);
                                   $$->u.sl = $2; }
-         | REMOVEFLAG stringlist  { if (!parse_script->support.imapflags) {
-                                    yyerror("imapflags MUST be enabled with \"require\"");
+         | REMOVEFLAG stringlist  { if (!(parse_script->support.imapflags ||
+					parse_script->support.imap4flags)) {
+                                    yyerror("imap4flags MUST be enabled with \"require\"");
                                     YYERROR;
                                     }
-                                  if (!verify_stringlist($2, verify_flag)) {
-                                    YYERROR; /* vf should call yyerror() */
+                                  verify_flaglist($2);
+                                  if(!$2->count) {
+                                      strarray_add($2, "");
                                   }
                                   $$ = new_command(REMOVEFLAG);
                                   $$->u.sl = $2; }
@@ -451,12 +471,21 @@ vtags: /* empty */		 { $$ = new_vtags(); }
 				   else { $$->mime = MIME; } }
 	;
 
-stringlist: '[' strings ']'      { $$ = sl_reverse($2); }
-	| STRING		 { $$ = new_sl($1, NULL); }
+stringlist: '[' strings ']'      { $$ = $2; }
+	| STRING		 {
+				    $$ = strarray_new();
+				    strarray_appendm($$, $1);
+				 }
 	;
 
-strings: STRING			 { $$ = new_sl($1, NULL); }
-	| strings ',' STRING	 { $$ = new_sl($3, $1); }
+strings: STRING			 {
+				    $$ = strarray_new();
+				    strarray_appendm($$, $1);
+				 }
+	| strings ',' STRING	 {
+				    $$ = $1;
+				    strarray_appendm($$, $3);
+				 }
 	;
 
 block: '{' commands '}'		 { $$ = $2; }
@@ -489,6 +518,29 @@ test:     ANYOF testlist	 { $$ = new_test(ANYOF); $$->u.tl = $2; }
 				     if ($$ == NULL) { 
 					 yyerror("unable to find a compatible comparator");
 					 YYERROR; } 
+				 }
+
+
+
+	| HASFLAG htags stringlist
+				 {
+				     if (!parse_script->support.imap4flags) {
+                                       yyerror("imap4flags MUST be enabled with \"require\"");
+				       YYERROR;
+				     }
+
+				     $2 = canon_htags($2);
+#ifdef ENABLE_REGEX
+				     if ($2->comptag == REGEX)
+				     {
+					 if (!(verify_regexs($3, $2->comparator)))
+					 { YYERROR; }
+				     }
+#endif
+				     $$ = build_hasflag(HASFLAG, $2, $3);
+				     if ($$ == NULL) {
+					 yyerror("unable to find a compatible comparator");
+					 YYERROR; }
 				 }
 
 
@@ -688,13 +740,40 @@ sizetag: OVER			 { $$ = OVER; }
 	| UNDER			 { $$ = UNDER; }
 	;
 
-copy: /* empty */		 { $$ = 0; }
-	| COPY			 { if (!parse_script->support.copy) {
+copy: COPY			 { if (!parse_script->support.copy) {
 				     yyerror("copy MUST be enabled with \"require\"");
 	                             YYERROR;
                                    }
-				   $$ = COPY; }
+				   $$ = 1; }
 	;
+
+ftags: /* empty */		 { $$ = new_ftags(); }
+	| ftags copy		 { $$ = $1;
+				   if ($$->copy) {
+			yyerror("duplicate copy tag"); YYERROR; }
+				   else { $$->copy = $2; } }
+	| ftags FLAGS stringlist { if (!parse_script->support.imap4flags) {
+				     yyerror("imap4flags MUST be enabled with \"require\"");
+	                             YYERROR;
+                                   }
+				   $$ = $1;
+				   if ($$->flags != NULL) {
+			yyerror("duplicate flags tag"); YYERROR; }
+				   else {
+				    verify_flaglist($3);
+				    if(!$3->count) {
+				        strarray_add($3, "");
+				    }
+				   $$->flags = $3; }
+				 }
+        ;
+
+rtags: /* empty */		 { $$ = 0; }
+	| rtags copy		 { $$ = $1;
+				   if ($$) {
+			yyerror("duplicate copy tag"); YYERROR; }
+				   else { $$ = $2; } }
+        ;
 
 testlist: '(' tests ')'		 { $$ = $2; }
 	;
@@ -734,40 +813,36 @@ int yyerror(const char *msg)
     return 0;
 }
 
-static char *check_reqs(stringlist_t *sl)
+static char *check_reqs(strarray_t *sa)
 {
-    stringlist_t *s;
+    char *s;
     char *err = NULL, *p, sep = ':';
     size_t alloc = 0;
-    
-    while (sl != NULL) {
-	s = sl;
-	sl = sl->next;
 
-	if (!script_require(parse_script, s->s)) {
+    while ((s = strarray_shift(sa))) {
+	if (!script_require(parse_script, s)) {
 	    if (!err) {
 		alloc = 100;
 		p = err = xmalloc(alloc);
 		p += sprintf(p, "Unsupported feature(s) in \"require\"");
 	    }
-	    else if ((size_t) (p - err + strlen(s->s) + 5) > alloc) {
+	    else if ((size_t) (p - err + strlen(s) + 5) > alloc) {
 		alloc += 100;
 		err = xrealloc(err, alloc);
 		p = err + strlen(err);
 	    }
 
-	    p += sprintf(p, "%c \"%s\"", sep, s->s);
+	    p += sprintf(p, "%c \"%s\"", sep, s);
 	    sep = ',';
 	}
 
-	free(s->s);
 	free(s);
     }
     return err;
 }
 
 static test_t *build_address(int t, struct aetags *ae,
-			     stringlist_t *sl, stringlist_t *pl)
+			     strarray_t *sl, strarray_t *pl)
 {
     test_t *ret = new_test(t);	/* can be either ADDRESS or ENVELOPE */
 
@@ -787,11 +862,11 @@ static test_t *build_address(int t, struct aetags *ae,
 }
 
 static test_t *build_header(int t, struct htags *h,
-			    stringlist_t *sl, stringlist_t *pl)
+			    strarray_t *sl, strarray_t *pl)
 {
-    test_t *ret = new_test(t);	/* can be HEADER */
+    test_t *ret = new_test(t);	/* can be HEADER or HASFLAG */
 
-    assert(t == HEADER);
+    assert((t == HEADER) || (t == HASFLAG));
 
     if (ret) {
 	ret->u.h.comptag = h->comptag;
@@ -804,7 +879,13 @@ static test_t *build_header(int t, struct htags *h,
     return ret;
 }
 
-static test_t *build_body(int t, struct btags *b, stringlist_t *pl)
+static test_t *build_hasflag(int t, struct htags *h,
+			    strarray_t *pl)
+{
+    return build_header(t,h,NULL,pl);
+}
+
+static test_t *build_body(int t, struct btags *b, strarray_t *pl)
 {
     test_t *ret = new_test(t);	/* can be BODY */
 
@@ -874,14 +955,29 @@ static commandlist_t *build_denotify(int t, struct dtags *d)
     return ret;
 }
 
-static commandlist_t *build_fileinto(int t, int copy, char *folder)
+static commandlist_t *build_keep(int t, struct ftags *f)
+{
+    commandlist_t *ret = new_command(t);
+
+    assert(t == KEEP);
+
+    if (ret) {
+	ret->u.k.copy = f->copy;
+	ret->u.k.flags = f->flags; f->flags = NULL;
+	free_ftags(f);
+    }
+    return ret;
+}
+
+static commandlist_t *build_fileinto(int t, struct ftags *f, char *folder)
 {
     commandlist_t *ret = new_command(t);
 
     assert(t == FILEINTO);
 
     if (ret) {
-	ret->u.f.copy = copy;
+	ret->u.f.copy = f->copy;
+	ret->u.f.flags = f->flags; f->flags = NULL;
 	if (config_getswitch(IMAPOPT_SIEVE_UTF8FILEINTO)) {
 	    ret->u.f.folder = xmalloc(5 * strlen(folder) + 1);
 	    UTF8_to_mUTF7(ret->u.f.folder, folder);
@@ -890,6 +986,7 @@ static commandlist_t *build_fileinto(int t, int copy, char *folder)
 	else {
 	    ret->u.f.folder = folder;
 	}
+	free_ftags(f);
     }
     return ret;
 }
@@ -974,10 +1071,11 @@ static struct btags *canon_btags(struct btags *b)
 {
     if (b->transform == -1) { b->transform = TEXT; }
     if (b->content_types == NULL) {
+	b->content_types = strarray_new();
 	if (b->transform == RAW) {
-	    b->content_types = new_sl(xstrdup(""), NULL);
+	    strarray_append(b->content_types, "");
 	} else {
-	    b->content_types = new_sl(xstrdup("text"), NULL);
+	    strarray_append(b->content_types, "text");
 	}
     }
     if (b->offset == -1) { b->offset = 0; }
@@ -988,7 +1086,7 @@ static struct btags *canon_btags(struct btags *b)
 
 static void free_btags(struct btags *b)
 {
-    if (b->content_types) { free_sl(b->content_types); }
+    if (b->content_types) { strarray_free(b->content_types); }
     free(b->comparator);
     free(b);
 }
@@ -1023,7 +1121,7 @@ static struct vtags *canon_vtags(struct vtags *v)
 
 static void free_vtags(struct vtags *v)
 {
-    if (v->addresses) { free_sl(v->addresses); }
+    if (v->addresses) { strarray_free(v->addresses); }
     if (v->subject) { free(v->subject); }
     if (v->from) { free(v->from); }
     if (v->handle) { free(v->handle); }
@@ -1061,7 +1159,7 @@ static void free_ntags(struct ntags *n)
 {
     if (n->method) { free(n->method); }
     if (n->id) { free(n->id); }
-    if (n->options) { free_sl(n->options); }
+    if (n->options) { strarray_free(n->options); }
     if (n->message) { free(n->message); }
     free(n);
 }
@@ -1082,10 +1180,35 @@ static void free_dtags(struct dtags *d)
     free(d);
 }
 
-static int verify_stringlist(stringlist_t *sl, int (*verify)(char *))
+static struct ftags *new_ftags(void)
 {
-    for (; sl != NULL && verify(sl->s); sl = sl->next) ;
-    return (sl == NULL);
+    struct ftags *f = (struct ftags *) xmalloc(sizeof(struct ftags));
+
+    f->copy = 0;
+    f->flags  = NULL;
+
+    return f;
+}
+
+static struct ftags *canon_ftags(struct ftags *f)
+{
+    return f;
+}
+
+static void free_ftags(struct ftags *f)
+{
+    if (f->flags) { strarray_free(f->flags); }
+    free(f);
+}
+
+static int verify_stringlist(strarray_t *sa, int (*verify)(char *))
+{
+    int i;
+
+    for (i = 0 ; i < sa->count ; i++)
+	if (!verify(sa->data[i]))
+	    return 0;
+    return 1;
 }
 
 char *addrptr;		/* pointer to address string for address lexer */
@@ -1195,29 +1318,6 @@ static int verify_relat(char *r)
 
 
 
-static int verify_flag(char *f)
-{
-    if (f[0] == '\\') {
-	lcase(f);
-	if (strcmp(f, "\\seen") && strcmp(f, "\\answered") &&
-	    strcmp(f, "\\flagged") && strcmp(f, "\\draft") &&
-	    strcmp(f, "\\deleted")) {
-	    snprintf(errbuf, ERR_BUF_SIZE,
-		     "flag '%s': not a system flag", f);
-	    yyerror(errbuf);
-	    return 0;
-	}
-	return 1;
-    }
-    if (!imparse_isatom(f)) {
-	snprintf(errbuf, ERR_BUF_SIZE,
-		 "flag '%s': not a valid keyword", f);
-	yyerror(errbuf);
-	return 0;
-    }
-    return 1;
-}
- 
 #ifdef ENABLE_REGEX
 static int verify_regex(char *s, int cflags)
 {
@@ -1239,25 +1339,20 @@ static int verify_regex(char *s, int cflags)
     return 1;
 }
 
-static int verify_regexs(stringlist_t *sl, char *comp)
+static int verify_regexs(const strarray_t *sa, char *comp)
 {
-    stringlist_t *sl2;
+    int i;
     int cflags = REG_EXTENDED | REG_NOSUB;
- 
 
     if (!strcmp(comp, "i;ascii-casemap")) {
 	cflags |= REG_ICASE;
     }
 
-    for (sl2 = sl; sl2 != NULL; sl2 = sl2->next) {
-	if ((verify_regex(sl2->s, cflags)) == 0) {
-	    break;
-	}
+    for (i = 0 ; i < sa->count ; i++) {
+	if ((verify_regex(sa->data[i], cflags)) == 0)
+	    return 0;
     }
-    if (sl2 == NULL) {
-	return 1;
-    }
-    return 0;
+    return 1;
 }
 #endif
 

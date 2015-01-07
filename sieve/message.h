@@ -47,7 +47,7 @@
 #define MESSAGE_H
 
 #include "sieve_interface.h"	/* for action contexts */
-#include "tree.h"		/* for stringlist_t */
+#include "tree.h"
 
 typedef struct Action action_list_t;
 
@@ -132,14 +132,14 @@ void free_notify_list(notify_list_t *n);
  * action list */
 int do_reject(action_list_t *m, const char *msg);
 int do_fileinto(action_list_t *m, const char *mbox, int cancel_keep,
-		sieve_imapflags_t *imapflags);
+		strarray_t *imapflags);
 int do_redirect(action_list_t *m, const char *addr, int cancel_keep);
-int do_keep(action_list_t *m, sieve_imapflags_t *imapflags);
+int do_keep(action_list_t *m, int cancel_keep, strarray_t *imapflags);
 int do_discard(action_list_t *m);
 int do_vacation(action_list_t *m, char *addr, char *fromaddr,
 		char *subj, const char *msg, int days, int mime,
 		const char *handle);
-int do_setflag(action_list_t *m, const char *flag);
+int do_setflag(action_list_t *m);
 int do_addflag(action_list_t *m, const char *flag);
 int do_removeflag(action_list_t *m, const char *flag);
 int do_mark(action_list_t *m);
