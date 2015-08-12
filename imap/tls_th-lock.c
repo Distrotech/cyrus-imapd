@@ -8,11 +8,10 @@
 #include <pthread.h>
 #include <syslog.h>
 
-#include <openssl/ssl.h>
-
 #include "tls_th-lock.h"
 
 #ifdef HAVE_SSL
+#include <openssl/ssl.h>
 
 static pthread_mutex_t *lock_cs;
 static long *lock_count;
