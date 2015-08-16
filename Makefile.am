@@ -1677,15 +1677,12 @@ doc/man/sieveshell.1.html: $(top_srcdir)/perl/sieve/scripts/sieveshell.pl
 dist-old:: distgit
 	@echo "creating configure"
 	@cd dist/cyrus-imapd-$(PACKAGE_VERSION) ; sh SMakefile
-	@for d in $(DIST_SUBDIRS); \
-	do \
-	(cd dist/cyrus-imapd-$(PACKAGE_VERSION)/$$d; \
+	@(cd dist/cyrus-imapd-$(PACKAGE_VERSION); \
 	if [ -f Makefile.dist ]; then \
 	echo "### Making" dist "in" `pwd`; \
 	$(MAKE) $(MFLAGS) YACC='$(YACC)' LEX='$(LEX)' \
 	COMPILE_ET='$(COMPILE_ET)' -f Makefile.dist dist ; \
-	fi) || exit 1; \
-	done
+	fi) || exit 1;
 	@echo "creating tarfile"
 	@cd dist ; tar cf - cyrus-imapd-$(PACKAGE_VERSION) | \
 	gzip -9 > ../cyrus-imapd-$(PACKAGE_VERSION).tar.gz
