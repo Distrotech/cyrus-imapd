@@ -117,8 +117,6 @@ check_PROGRAMS =
 libexec_PROGRAMS =
 sbin_PROGRAMS =
 CLEANFILES =
-EXTRA_DIST = \
-	$(wildcard tools/vzic/*)
 
 if COM_ERR
 COMPILE_ET_DEP = com_err/et/compile_et
@@ -243,24 +241,6 @@ if SIEVE
 check_PROGRAMS += notifyd/notifytest
 libexec_PROGRAMS += notifyd/notifyd
 endif # SIEVE
-
-else # SERVER
-EXTRA_DIST += \
-    imap/mupdate_err.c \
-    imap/nntp_err.c \
-    imap/lmtpstats.c \
-    imap/pushstats.c \
-    imap/rfc822_header.c \
-    imap/rfc822_header.h
-
-if !HTTPD
-EXTRA_DIST += \
-	imap/http_caldav_js.h \
-	imap/http_err.c \
-	imap/http_err.h \
-	imap/tz_err.c \
-	imap/tz_err.h
-endif # HTTPD
 
 endif # SERVER
 
@@ -393,6 +373,14 @@ EXTRA_DIST += \
 	lib/test/cyrusdbtxn.OUTPUT \
 	lib/test/pool.c \
 	lib/test/rnddb.c \
+	man/ctl_zoneinfo.8 \
+	man/fetchnews.8 \
+	man/httpd.8 \
+	man/nntpd.8 \
+	man/squatter.8 \
+	man/sync_client.8 \
+	man/sync_reset.8 \
+	man/sync_server.8 \
 	master/CYRUS-MASTER.mib \
 	master/conf/cmu-backend.conf \
 	master/conf/cmu-frontend.conf \
@@ -521,7 +509,8 @@ EXTRA_DIST += \
 	sieve/tests/actionExtensions/serverm/ueamail-flag5 \
 	sieve/tests/actionExtensions/serverm/ueamail-notify2 \
 	sieve/tests/actionExtensions/serverm/ueamail-vacation \
-	timsieved/TODO
+	timsieved/TODO \
+	tools/vzic
 
 TEXINFO_TEX = com_err/et/texinfo.tex
 dist_noinst_SCRIPTS = \
@@ -831,28 +820,14 @@ imap_cyr_synclog_LDADD = $(LD_UTILITY_ADD)
 imap_cyr_userseen_SOURCES = imap/cli_fatal.c imap/cyr_userseen.c imap/mutex_fake.c
 imap_cyr_userseen_LDADD = $(LD_UTILITY_ADD)
 
-if USE_SPHINX
 imap_cyr_sphinxmgr_SOURCES = imap/cli_fatal.c imap/cyr_sphinxmgr.c imap/mutex_fake.c
 imap_cyr_sphinxmgr_LDADD = $(LD_UTILITY_ADD)
-endif
 
-if HAVE_CLAMAV
 imap_cyr_virusscan_SOURCES = imap/cli_fatal.c imap/cyr_virusscan.c imap/mutex_fake.c
 imap_cyr_virusscan_LDADD = $(LD_UTILITY_ADD) -lclamav
-else # HAVE_CLAMAV
-EXTRA_DIST += \
-	imap/cyr_virusscan.c
 
-endif # HAVE_CLAMAV
-
-if HTTPD
 imap_ctl_zoneinfo_SOURCES = imap/cli_fatal.c imap/ctl_zoneinfo.c imap/mutex_fake.c imap/zoneinfo_db.c
 imap_ctl_zoneinfo_LDADD = $(LD_UTILITY_ADD)
-else # HTTPD
-EXTRA_DIST += \
-	imap/ctl_zoneinfo.c
-
-endif # HTTPD
 
 imap_deliver_SOURCES = \
 	imap/deliver.c \
@@ -873,12 +848,8 @@ imap_fud_LDADD = $(LD_SERVER_ADD)
 imap_idled_SOURCES = imap/idled.c imap/mutex_fake.c
 imap_idled_LDADD = $(LD_UTILITY_ADD)
 
-if CALALARMD
 imap_calalarmd_SOURCES = imap/calalarmd.c imap/mutex_fake.c
 imap_calalarmd_LDADD = $(LD_SERVER_ADD) -lm
-else
-EXTRA_DIST += imap/calalarmd.c
-endif # CALALARMD
 
 imap_imapd_SOURCES = \
 	imap/imap_proxy.c \
@@ -1209,7 +1180,6 @@ imap_squatter_LDADD = $(LD_UTILITY_ADD)
 imap_squat_dump_SOURCES = imap/cli_fatal.c imap/mutex_fake.c imap/squat_dump.c
 imap_squat_dump_LDADD = $(LD_UTILITY_ADD)
 
-if REPLICATION
 imap_sync_client_SOURCES = imap/mutex_fake.c imap/sync_client.c imap/sync_support.c imap/sync_support.h
 imap_sync_client_LDADD = $(LD_UTILITY_ADD)
 
@@ -1218,15 +1188,6 @@ imap_sync_reset_LDADD = $(LD_UTILITY_ADD)
 
 imap_sync_server_SOURCES = imap/mutex_fake.c imap/sync_server.c imap/sync_support.c imap/sync_support.h master/service.c
 imap_sync_server_LDADD = $(LD_SERVER_ADD)
-else
-EXTRA_DIST += \
-	imap/sync_client.c \
-	imap/sync_reset.c \
-	imap/sync_server.c \
-	imap/sync_support.c \
-	imap/sync_support.h
-
-endif # REPLICATION
 
 imap_tls_prune_SOURCES = imap/cli_fatal.c imap/mutex_fake.c imap/tls_prune.c
 imap_tls_prune_LDADD = $(LD_UTILITY_ADD)
@@ -1438,51 +1399,27 @@ dist_man_MANS = \
 	man/unexpunge.8
 
 if USE_SQUAT
-dist_man_MANS += \
+man_MANS += \
 	man/squatter.8
-
-else
-EXTRA_DIST += \
-	man/squatter.8
-
 endif # USE_SQUAT
 
 if NNTPD
-dist_man_MANS += \
+man_MANS += \
 	man/fetchnews.8 \
 	man/nntpd.8
-
-else # NNTPD
-EXTRA_DIST += \
-	man/fetchnews.8 \
-	man/nntpd.8
-
 endif # NNTPD
 
 if HTTPD
-dist_man_MANS += \
+man_MANS += \
 	man/ctl_zoneinfo.8 \
 	man/httpd.8
-
-else # HTTPD
-EXTRA_DIST += \
-	man/ctl_zoneinfo.8 \
-	man/httpd.8
-
 endif # HTTPD
 
 if REPLICATION
-dist_man_MANS += \
+man_MANS += \
 	man/sync_client.8 \
 	man/sync_reset.8 \
 	man/sync_server.8
-
-else
-EXTRA_DIST += \
-	man/sync_client.8 \
-	man/sync_reset.8 \
-	man/sync_server.8
-
 endif
 
 master_master_SOURCES = \
