@@ -42,7 +42,7 @@
 #
 
 ACLOCAL_AMFLAGS = -I cmulocal
-AM_CFLAGS = @PERL_CCCDLFLAGS@ $(COV_CFLAGS)
+AM_CFLAGS = @PERL_CCCDLFLAGS@ $(COV_CFLAGS) $(SQLITE3_CFLAGS)
 AM_CXXFLAGS = $(COV_CXXFLAGS)
 
 AM_CPPFLAGS = \
@@ -1166,7 +1166,7 @@ imap_httpd_SOURCES = \
 	master/masterconf.c \
 	master/service.c
 
-imap_httpd_LDADD = $(LD_SERVER_ADD)
+imap_httpd_LDADD = $(LD_SERVER_ADD) $(SQLITE3_LIBS)
 
 imap_pop3d_SOURCES = \
 	imap/mutex_fake.c \
@@ -1331,7 +1331,7 @@ lib_libcyrus_la_SOURCES += lib/nonblock_fcntl.c
 else
 lib_libcyrus_la_SOURCES += lib/nonblock_ioctl.c
 endif
-lib_libcyrus_la_LIBADD = $(LIB_RT) ${LIB_SASL} $(SSL_LIBS)
+lib_libcyrus_la_LIBADD = $(LIB_RT) ${LIB_SASL} $(SSL_LIBS) $(SQLITE3_LIBS)
 lib_libcyrus_la_CFLAGS = $(AM_CFLAGS) $(CFLAG_VISIBILITY)
 
 lib_libcyrus_min_la_SOURCES = \
@@ -1525,7 +1525,7 @@ notifyd_notifytest_SOURCES = notifyd/notifytest.c imap/mutex_fake.c
 notifyd_notifytest_LDADD = $(LD_BASIC_ADD)
 
 perl_libcyrus_la_SOURCES = $(lib_libcyrus_la_SOURCES)
-perl_libcyrus_la_LIBADD = $(lib_libcyrus_la_LIBADD)
+perl_libcyrus_la_LIBADD = $(lib_libcyrus_la_LIBADD) $(SQLITE3_LIBS)
 perl_libcyrus_min_la_SOURCES = $(lib_libcyrus_min_la_SOURCES)
 perl_libcyrus_min_la_LIBADD = $(lib_libcyrus_min_la_LIBADD)
 

@@ -317,42 +317,14 @@ dnl End PgSQL Detection
 
 dnl SQLite Detection
 AC_ARG_WITH(sqlite,
-        [AS_HELP_STRING([--with-sqlite=DIR], [use SQLite (in DIR) [no]])],
-        with_sqlite=$withval, with_sqlite=no)
-
-case "$with_sqlite" in
-  no)
-        use_sqlite="no"
-        ;;
-  yes)
-        use_sqlite="yes"
-        with_sqlite_lib=none
-        with_sqlite_inc=none
-        ;;
-  *)
-        use_sqlite="yes"
-        with_sqlite_lib="$with_sqlite/lib"
-        with_sqlite_inc="$with_sqlite/include"
-        ;;
-esac
-
-if test "$use_sqlite" != "no"; then
-  CYRUS_SQLITE_CHK()
-
-  if test "$sqlitelib" = "no"; then
-    AC_MSG_ERROR([Sqlite was not found.  You may need to supply the
-    --with-sqlite-libdir or --with-sqlite-incdir configure options.])
-  else
-    HAVE_SQL=1
-  fi
-
-  if test "$with_sqlite_lib" != "none"; then
-    CMU_ADD_LIBPATH($with_sqlite_lib)
-  fi
-
-  LIBS="${LIBS} ${SQLITE_LIBADD}"
-  CPPFLAGS="${SQLITE_INCADD} ${CPPFLAGS}"
-
+        [AS_HELP_STRING([--without-sqlite], [don't use SQLite [use]])],
+        [if test "x$withval" != "xno"; then
+           PKG_CHECK_MODULES([SQLITE3], [sqlite3])
+        fi], [
+           PKG_CHECK_MODULES([SQLITE3], [sqlite3], [with_sqlite=yes], [with_sqlite=no])
+        ])
+if test "x$with_sqlite" != "xno"; then
+  HAVE_SQL=1
   AC_DEFINE(HAVE_SQLITE,[],[Build in SQLite support?])
 fi
 
@@ -1294,9 +1266,11 @@ dnl
                                 [Do we have support for xmlBufferDetach()?]))
                 ])
 
-        PKG_CHECK_MODULES([SQLITE3], [sqlite3],
-                AC_DEFINE(WITH_DAV,[],[Build *DAV support into httpd?]),
-                AC_MSG_ERROR([Need sqlite3 for http]))
+        if test "x$with_sqlite" = "xyes"; then
+          AC_DEFINE(WITH_DAV,[],[Build *DAV support into httpd?])
+        else
+          AC_MSG_ERROR([Need sqlite3 for http])
+        fi
 
         PKG_CHECK_MODULES([ICAL], [libical],
                 AC_DEFINE(HAVE_ICAL,[],[Build CalDAV support into httpd?]),
@@ -1350,8 +1324,8 @@ dnl
                         AC_MSG_WARN([Your version of OpenDKIM can not support iSchedule.  Consider patching OpenDKIM with contrib/dkim_canon_ischedule.patch])),
                 AC_MSG_WARN([Your version of OpenDKIM can not support iSchedule.  Consider upgrading to OpenDKIM >= 2.7.0]))
 
-        HTTP_CPPFLAGS="${XML2_CFLAGS} ${SQLITE3_CFLAGS} ${ICAL_CFLAGS} ${JANSSON_CFLAGS}"
-        HTTP_LIBS="${XML2_LIBS} ${SQLITE3_LIBS} ${ICAL_LIBS} ${JANSSON_LIBS}"
+        HTTP_CPPFLAGS="${XML2_CFLAGS} ${ICAL_CFLAGS} ${JANSSON_CFLAGS}"
+        HTTP_LIBS="${XML2_LIBS} ${ICAL_LIBS} ${JANSSON_LIBS}"
 fi
 AC_SUBST(HTTP_CPPFLAGS)
 AC_SUBST(HTTP_LIBS)
@@ -1889,7 +1863,7 @@ External dependencies:
 Database support:
    mysql:              $with_mysql
    postgresql:         $use_pgsql
-   sqlite:             $use_sqlite
+   sqlite:             $with_sqlite
 
 Search engine:
    squat:              $enable_squat
